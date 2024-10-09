@@ -148,6 +148,7 @@ static char *arg_machine = NULL;     /* The name used by the host to refer to th
 static char *arg_hostname = NULL;    /* The name the payload sees by default */
 static const char *arg_selinux_context = NULL;
 static const char *arg_selinux_apifs_context = NULL;
+static bool arg_selinux_namespace = false;
 static char *arg_slice = NULL;
 static bool arg_private_network; /* initialized depending on arg_privileged in run() */
 static bool arg_read_only = false;
@@ -437,6 +438,7 @@ static int help(void) {
                "  -L --selinux-apifs-context=SECLABEL\n"
                "                            Set the SELinux security context to be used by\n"
                "                            API/tmpfs file systems in the container\n"
+               "     --selinux-namespace    Unshare SELinux namespace\n"
                "\n%3$sResources:%4$s\n"
                "     --rlimit=NAME=LIMIT    Set a resource limit for the payload\n"
                "     --oom-score-adjust=VALUE\n"
@@ -654,6 +656,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_OVERLAY,
                 ARG_OVERLAY_RO,
                 ARG_INACCESSIBLE,
+                ARG_SELINUX_NAMESPACE,
                 ARG_SHARE_SYSTEM,
                 ARG_REGISTER,
                 ARG_KEEP_UNIT,
@@ -731,6 +734,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "setenv",                 required_argument, NULL, 'E'                        },
                 { "selinux-context",        required_argument, NULL, 'Z'                        },
                 { "selinux-apifs-context",  required_argument, NULL, 'L'                        },
+                { "selinux-namespace",      no_argument,       NULL, ARG_SELINUX_NAMESPACE      },
                 { "quiet",                  no_argument,       NULL, 'q'                        },
                 { "share-system",           no_argument,       NULL, ARG_SHARE_SYSTEM           }, /* not documented */
                 { "register",               required_argument, NULL, ARG_REGISTER               },
@@ -1003,6 +1007,10 @@ static int parse_argv(int argc, char *argv[]) {
 
                 case 'L':
                         arg_selinux_apifs_context = optarg;
+                        break;
+
+                case ARG_SELINUX_NAMESPACE:
+                        arg_selinux_namespace = true;
                         break;
 
                 case ARG_READ_ONLY:
@@ -3323,6 +3331,7 @@ static int inner_child(
                 NULL, /* NOTIFY_SOCKET */
                 NULL, /* CREDENTIALS_DIRECTORY */
                 NULL, /* LANG */
+                NULL, /* SELINUXNS */
                 NULL
         };
         const char *exec_target;
@@ -3502,6 +3511,12 @@ static int inner_child(
         if (r < 0)
                 return log_error_errno(r, "Failed to apply resource limit RLIMIT_%s: %m", rlimit_to_string(which_failed));
 
+#if HAVE_SELINUX
+        if (arg_selinux_namespace)
+                if (selinux_unshare() < 0)
+                        return log_error_errno(errno, "selinux_unshare() failed: %m");
+#endif
+
 #if HAVE_SECCOMP
         if (arg_seccomp) {
 
@@ -3610,6 +3625,15 @@ static int inner_child(
                         return log_oom();
                 n_env++;
         }
+
+#if HAVE_SELINUX
+        if (arg_selinux_namespace) {
+                envp[n_env] = strdup("SELINUXNS=1");
+                if (!envp[n_env])
+                        return log_oom();
+                n_env++;
+        }
+#endif
 
         env_use = strv_env_merge(envp, os_release_pairs, arg_setenv);
         if (!env_use)
